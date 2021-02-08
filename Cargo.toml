@@ -1,0 +1,15 @@
+[package]
+name = "onnx-rs"
+version = "0.1.0"
+edition = "2018"
+
+[build-dependencies]
+# We're very permissive here with bindgen due to https://github.com/rust-lang/cargo/issues/5237
+bindgen = "0.*"
+
+[dev-dependencies]
+ndarray = "0.14.0"
+
+[dependencies]
+thiserror = "1.0.23"
+scopeguard = "1.1.0"
