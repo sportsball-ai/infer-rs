@@ -1,11 +1,17 @@
 [package]
-name = "onnx"
+name = "infer"
 version = "0.1.0"
 edition = "2018"
+
+[features]
+default = ["onnx", "coreml"]
+onnx = []
+coreml = []
 
 [build-dependencies]
 # We're very permissive here with bindgen due to https://github.com/rust-lang/cargo/issues/5237
 bindgen = "0.*"
+cc = "1.0"
 
 [dev-dependencies]
 ndarray = "0.14.0"

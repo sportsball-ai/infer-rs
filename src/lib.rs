@@ -1,328 +1,150 @@
-use scopeguard::ScopeGuard;
-use std::{
-    ffi::{c_void, CStr, CString},
-    fmt,
-    marker::PhantomData,
-    os::{raw::c_uint, unix::ffi::OsStrExt},
-    path::Path,
-};
+use std::path::Path;
 
-macro_rules! c_str {
-    ($s:expr) => {{
-        concat!($s, "\0").as_ptr() as *const i8
-    }};
-}
+#[cfg(all(feature = "coreml", target_os = "macos"))]
+pub mod coreml;
 
-mod api;
-use api::*;
-
-mod sys;
-
-#[derive(Debug)]
-pub struct Error {
-    pub code: c_uint,
-    pub message: String,
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.message, self.code)
-    }
-}
-
-impl std::error::Error for Error {}
-
-struct MemoryInfo {
-    api: API,
-    inner: *mut sys::OrtMemoryInfo,
-}
-
-impl Drop for MemoryInfo {
-    fn drop(&mut self) {
-        unsafe { self.api.release_memory_info(self.inner) }
-    }
-}
+#[cfg(feature = "onnx")]
+pub mod onnx;
 
 pub struct Environment {
-    api: API,
-    memory_info: MemoryInfo,
-    inner: *mut sys::OrtEnv,
+    #[cfg(feature = "onnx")]
+    onnx: onnx::Environment,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum NewEnvironmentError {
-    #[error("unsupported api version")]
-    UnsupportedAPIVersion,
+    #[cfg(feature = "onnx")]
     #[error(transparent)]
-    Other(#[from] Error),
-}
-
-impl From<NewAPIError> for NewEnvironmentError {
-    fn from(err: NewAPIError) -> Self {
-        match err {
-            NewAPIError::UnsupportedVersion => Self::UnsupportedAPIVersion,
-        }
-    }
+    ONNX(#[from] onnx::NewEnvironmentError),
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum NewSessionError {
-    #[error("malformed model path")]
-    MalformedModelPath,
+    #[cfg(feature = "onnx")]
     #[error(transparent)]
-    Other(#[from] Error),
+    ONNX(#[from] onnx::NewSessionError),
+    #[cfg(all(feature = "coreml", target_os = "macos"))]
+    #[error(transparent)]
+    CoreML(#[from] coreml::NewMLModelError),
+    #[error("unsupported format")]
+    UnsupportedFormat,
 }
 
 impl Environment {
-    pub fn new() -> Result<Environment, NewEnvironmentError> {
-        let api = API::new()?;
-        unsafe {
-            let memory_info = MemoryInfo {
-                api,
-                inner: api.create_cpu_memory_info(
-                    sys::OrtAllocatorType_OrtArenaAllocator,
-                    sys::OrtMemType_OrtMemTypeDefault,
-                )?,
-            };
-            let inner =
-                api.create_env(sys::OrtLoggingLevel_ORT_LOGGING_LEVEL_WARNING, c_str!(""))?;
-            Ok(Environment {
-                api,
-                inner,
-                memory_info,
-            })
-        }
+    pub fn new() -> Result<Self, NewEnvironmentError> {
+        Ok(Self {
+            #[cfg(feature = "onnx")]
+            onnx: onnx::Environment::new()?,
+        })
     }
 
-    pub fn new_session<P: AsRef<Path>>(
+    pub fn new_session<P: AsRef<Path>>(&self, model_path: P) -> Result<Session, NewSessionError> {
+        let model_path = model_path.as_ref();
+        Ok(match model_path.extension().and_then(|s| s.to_str()) {
+            #[cfg(feature = "onnx")]
+            Some("onnx") => Session::ONNX(self.onnx.new_session(model_path)?),
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            Some("mlmodel") => Session::CoreML(coreml::MLModel::new(model_path)?),
+            _ => return Err(NewSessionError::UnsupportedFormat),
+        })
+    }
+}
+
+pub enum Session<'a> {
+    #[cfg(feature = "onnx")]
+    ONNX(onnx::Session<'a>),
+    #[cfg(all(feature = "coreml", target_os = "macos"))]
+    CoreML(coreml::MLModel),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum SessionRunError {
+    #[cfg(feature = "onnx")]
+    #[error(transparent)]
+    ONNXError(#[from] onnx::Error),
+    #[cfg(feature = "onnx")]
+    #[error(transparent)]
+    ONNXRunError(#[from] onnx::SessionRunError),
+    #[cfg(all(feature = "coreml", target_os = "macos"))]
+    #[error(transparent)]
+    CoreML(#[from] coreml::PredictError),
+}
+
+impl<'a> Session<'a> {
+    pub fn run<'r, I: IntoIterator<Item = (&'r str, InputTensor<'r>)>>(
         &self,
-        model_path: P,
-    ) -> Result<Session<'_>, NewSessionError> {
-        let model_path = CString::new(model_path.as_ref().as_os_str().as_bytes())
-            .map_err(|_| NewSessionError::MalformedModelPath)?;
-        unsafe {
-            let allocator = self.api.get_allocator_with_default_options()?;
-            let sess = scopeguard::guard(
-                self.api
-                    .create_session(self.inner, model_path.as_ptr(), std::ptr::null())?,
-                |ptr| self.api.release_session(ptr),
-            );
-
-            let input_names = (0..self.api.session_get_input_count(*sess)?)
-                .map(|i| -> Result<CString, Error> {
-                    let raw = self.api.session_get_input_name(*sess, i, allocator)?;
-                    let ret = CStr::from_ptr(raw).to_owned();
-                    self.api.allocator_free(allocator, raw as _)?;
-                    Ok(ret)
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let input_name_ptrs = input_names.iter().map(|s| s.as_ptr()).collect();
-
-            let output_names = (0..self.api.session_get_output_count(*sess)?)
-                .map(|i| -> Result<CString, Error> {
-                    let raw = self.api.session_get_output_name(*sess, i, allocator)?;
-                    let ret = CStr::from_ptr(raw).to_owned();
-                    self.api.allocator_free(allocator, raw as _)?;
-                    Ok(ret)
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let output_name_ptrs = output_names.iter().map(|s| s.as_ptr()).collect();
-
-            Ok(Session {
-                api: self.api,
-                inner: ScopeGuard::into_inner(sess),
-                _input_names: input_names,
-                input_name_ptrs,
-                _output_names: output_names,
-                output_name_ptrs,
-                env: PhantomData,
-            })
-        }
-    }
-
-    pub fn new_tensor<'t, 'a: 't, 'data: 't, T: DataType>(
-        &'a self,
-        data: &'data [T],
-        shape: &[usize],
-    ) -> Result<Tensor<'t>, Error> {
-        let ort_shape: Vec<_> = shape.iter().map(|n| *n as i64).collect();
-        let data_type = T::tensor_element_data_type();
-        unsafe {
-            Ok(Tensor {
-                api: self.api,
-                inner: self.api.create_tensor_with_data_as_ort_value(
-                    self.memory_info.inner,
-                    data.as_ptr() as _,
-                    (data.len() * std::mem::size_of::<T>()) as _,
-                    &ort_shape,
-                    data_type,
-                )?,
-                data_type,
-                data_ptr: data.as_ptr() as _,
-                shape: shape.to_vec(),
-                env_and_data: PhantomData,
-            })
-        }
-    }
-}
-
-impl Drop for Environment {
-    fn drop(&mut self) {
-        unsafe { self.api.release_env(self.inner) }
-    }
-}
-
-pub struct Session<'env> {
-    api: API,
-    inner: *mut sys::OrtSession,
-    _input_names: Vec<CString>,
-    input_name_ptrs: Vec<*const ::std::os::raw::c_char>,
-    _output_names: Vec<CString>,
-    output_name_ptrs: Vec<*const ::std::os::raw::c_char>,
-    env: PhantomData<&'env Environment>,
-}
-
-impl<'env> Session<'env> {
-    pub fn run(&self, inputs: &[Tensor]) -> Result<Vec<Tensor<'env>>, Error> {
-        let inputs: Vec<_> = inputs
-            .iter()
-            .map(|input| input.inner as *const sys::OrtValue)
-            .collect();
-        unsafe {
-            let outputs = self.api.run(
-                self.inner,
-                std::ptr::null(),
-                &self.input_name_ptrs,
-                &inputs,
-                &self.output_name_ptrs,
-            )?;
-            let outputs: Vec<_> = outputs
-                .into_iter()
-                .map(|ptr| scopeguard::guard(ptr, |ptr| self.api.release_value(ptr)))
-                .collect();
-            Ok(outputs
-                .into_iter()
-                .map(|value| -> Result<Tensor, Error> {
-                    let info =
-                        scopeguard::guard(self.api.get_tensor_type_and_shape(*value)?, |ptr| {
-                            self.api.release_tensor_type_and_shape_info(ptr)
-                        });
-                    let data_type = self.api.get_tensor_element_type(*info)?;
-                    let data_ptr = self.api.get_tensor_mutable_data(*value)?;
-                    let dims = self.api.get_dimensions_count(*info)?;
-                    let mut dims = vec![0; dims as usize];
-                    self.api.get_dimensions(*info, &mut dims)?;
-                    let shape = dims.into_iter().map(|n| n as _).collect();
-                    Ok(Tensor {
-                        api: self.api,
-                        inner: ScopeGuard::into_inner(value),
-                        data_type,
-                        data_ptr: data_ptr,
-                        shape: shape,
-                        env_and_data: PhantomData,
+        inputs: I,
+    ) -> Result<Vec<(&str, OutputTensor<'a>)>, SessionRunError> {
+        match self {
+            #[cfg(feature = "onnx")]
+            Self::ONNX(sess) => {
+                let inputs: Vec<_> = inputs
+                    .into_iter()
+                    .map(|(name, input)| {
+                        Ok((
+                            name,
+                            sess.environment().new_tensor(input.data, input.shape)?,
+                        ))
                     })
-                })
-                .collect::<Result<_, Error>>()?)
-        }
-    }
-}
-
-impl<'env> Drop for Session<'env> {
-    fn drop(&mut self) {
-        unsafe { self.api.release_session(self.inner) }
-    }
-}
-
-pub trait DataType {
-    fn tensor_element_data_type() -> sys::ONNXTensorElementDataType;
-}
-
-impl DataType for f32 {
-    fn tensor_element_data_type() -> sys::ONNXTensorElementDataType {
-        sys::ONNXTensorElementDataType_ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT
-    }
-}
-
-pub struct Tensor<'a> {
-    api: API,
-    inner: *mut sys::OrtValue,
-    data_type: sys::ONNXTensorElementDataType,
-    data_ptr: *const c_void,
-    shape: Vec<usize>,
-    env_and_data: PhantomData<&'a ()>,
-}
-
-impl<'a> Tensor<'a> {
-    pub fn shape(&self) -> &[usize] {
-        &self.shape
-    }
-
-    pub fn as_slice<T: DataType>(&self) -> Option<&'a [T]> {
-        if T::tensor_element_data_type() == self.data_type {
-            unsafe {
-                Some(std::slice::from_raw_parts(
-                    self.data_ptr as _,
-                    self.shape.iter().product(),
-                ))
+                    .collect::<Result<_, onnx::Error>>()?;
+                let outputs = sess.run(&inputs)?;
+                Ok(outputs
+                    .into_iter()
+                    .map(|(name, output)| (name, OutputTensor::ONNX(output)))
+                    .collect())
             }
-        } else {
-            None
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            Self::CoreML(model) => {
+                let inputs: Vec<_> = inputs
+                    .into_iter()
+                    .map(|(name, input)| {
+                        (
+                            name,
+                            coreml::InputTensor {
+                                data: input.data,
+                                shape: input.shape,
+                            },
+                        )
+                    })
+                    .collect();
+                let outputs = model.predict(&inputs)?;
+                Ok(outputs
+                    .into_iter()
+                    .map(|(name, output)| (name, OutputTensor::CoreML(output)))
+                    .collect())
+            }
         }
     }
 }
 
-impl<'a> Drop for Tensor<'a> {
-    fn drop(&mut self) {
-        unsafe { self.api.release_value(self.inner) }
-    }
+pub struct InputTensor<'a> {
+    pub data: &'a [f32],
+    pub shape: &'a [usize],
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ndarray::array;
+pub enum OutputTensor<'a> {
+    #[cfg(feature = "onnx")]
+    ONNX(onnx::Tensor<'a>),
+    #[cfg(all(feature = "coreml", target_os = "macos"))]
+    CoreML(coreml::OutputTensor),
+}
 
-    // This test verifies that basic functionality works by running upsample.onnx, which was
-    // produced via:
-    //
-    // ```
-    // import subprocess
-    // from tensorflow import keras
-    //
-    // m = keras.Sequential([
-    //     keras.layers.UpSampling2D(size=2)
-    // ])
-    // m.build(input_shape=(None, None, None, 3))
-    // m.summary()
-    // m.save('saved_model')
-    //
-    // subprocess.check_call([
-    //     'python', '-m', 'tf2onnx.convert',
-    //     '--saved-model', 'saved_model',
-    //     '--opset', '12',
-    //     '--output', 'upsample.onnx',
-    // ])
-    // ```
-    #[test]
-    fn test_upsample() {
-        let env = Environment::new().unwrap();
-        let sess = env.new_session("src/testdata/upsample.onnx").unwrap();
-        let input = array![[1., 2., 3.], [3., 4., 5.]]
-            .into_shape((1, 1, 2, 3))
-            .unwrap();
-        let input = env
-            .new_tensor(input.as_slice().unwrap(), &[1, 1, 2, 3])
-            .unwrap();
-        let outputs = sess.run(&[input]).unwrap();
-        assert_eq!(outputs.len(), 1);
-        let output = &outputs[0];
-        assert_eq!(output.shape(), vec![1, 2, 4, 3]);
-        assert_eq!(
-            output.as_slice::<f32>().unwrap(),
-            vec![
-                1., 2., 3., 1., 2., 3., 3., 4., 5., 3., 4., 5., 1., 2., 3., 1., 2., 3., 3., 4., 5.,
-                3., 4., 5.
-            ]
-        );
+impl<'a> OutputTensor<'a> {
+    pub fn as_slice(&self) -> Option<&[f32]> {
+        match self {
+            #[cfg(feature = "onnx")]
+            Self::ONNX(t) => t.as_slice(),
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            Self::CoreML(t) => Some(t.as_slice()),
+        }
+    }
+
+    pub fn shape(&self) -> &[usize] {
+        match self {
+            #[cfg(feature = "onnx")]
+            Self::ONNX(t) => t.shape(),
+            #[cfg(all(feature = "coreml", target_os = "macos"))]
+            Self::CoreML(t) => t.shape(),
+        }
     }
 }

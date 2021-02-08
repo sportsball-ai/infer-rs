@@ -86,34 +86,6 @@ impl API {
         Ok(ret)
     }
 
-    pub unsafe fn session_get_input_count(
-        &self,
-        sess: *const sys::OrtSession,
-    ) -> Result<sys::size_t, Error> {
-        let mut ret = 0;
-        self.consume_status((*self.0)
-            .SessionGetInputCount
-            .expect("SessionGetInputCount should be available")(
-            sess, &mut ret
-        ))?;
-        Ok(ret)
-    }
-
-    pub unsafe fn session_get_input_name(
-        &self,
-        sess: *const sys::OrtSession,
-        index: sys::size_t,
-        allocator: *mut sys::OrtAllocator,
-    ) -> Result<*mut ::std::os::raw::c_char, Error> {
-        let mut ret = std::ptr::null_mut();
-        self.consume_status((*self.0)
-            .SessionGetInputName
-            .expect("SessionGetInputName should be available")(
-            sess, index, allocator, &mut ret,
-        ))?;
-        Ok(ret)
-    }
-
     pub unsafe fn session_get_output_count(
         &self,
         sess: *const sys::OrtSession,
