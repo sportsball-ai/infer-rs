@@ -19,6 +19,7 @@ fn main() {
         println!("cargo:rustc-link-lib=onnxruntime");
 
         let bindings = bindgen::Builder::default()
+            .clang_arg("-Ivendor/onnxruntime/include")
             .header("src/onnx/bindings.h")
             .whitelist_var("ORT_API_VERSION")
             .whitelist_function("OrtGetApiBase")
