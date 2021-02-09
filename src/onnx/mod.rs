@@ -102,12 +102,16 @@ impl Environment {
             .map_err(|_| NewSessionError::MalformedModelPath)?;
         unsafe {
             let allocator = self.api.get_allocator_with_default_options()?;
-            let sess_options = self.api.create_session_options()?;
+            let sess_options = scopeguard::guard(self.api.create_session_options()?, |ptr| {
+                self.api.release_session_options(ptr)
+            });
 
-            sys::OrtSessionOptionsAppendExecutionProvider_CUDA(sess_options, 0);
+            #[cfg(feature = "cuda")]
+            sys::OrtSessionOptionsAppendExecutionProvider_CUDA(*sess_options, 0);
+
             let sess = scopeguard::guard(
                 self.api
-                    .create_session(self.inner, model_path.as_ptr(), sess_options)?,
+                    .create_session(self.inner, model_path.as_ptr(), *sess_options)?,
                 |ptr| self.api.release_session(ptr),
             );
 

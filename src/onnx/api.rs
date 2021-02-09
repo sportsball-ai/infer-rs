@@ -152,6 +152,12 @@ impl API {
             .expect("ReleaseSession should be available")(session)
     }
 
+    pub unsafe fn release_session_options(&self, session_options: *mut sys::OrtSessionOptions) {
+        (*self.0)
+            .ReleaseSessionOptions
+            .expect("ReleaseSessionOptions should be available")(session_options)
+    }
+
     pub unsafe fn create_tensor_with_data_as_ort_value(
         &self,
         info: *const sys::OrtMemoryInfo,
