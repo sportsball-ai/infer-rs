@@ -23,6 +23,7 @@ fn main() {
             .header("src/onnx/bindings.h")
             .whitelist_var("ORT_API_VERSION")
             .whitelist_function("OrtGetApiBase")
+            .whitelist_function("OrtSessionOptionsAppendExecutionProvider_CUDA")
             .whitelist_type("OrtApi")
             .layout_tests(false)
             .generate()

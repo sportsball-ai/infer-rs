@@ -71,6 +71,16 @@ impl API {
         ))
     }
 
+    pub unsafe fn create_session_options(&self) -> Result<*mut sys::OrtSessionOptions, Error> {
+        let mut ret = std::ptr::null_mut();
+        self.consume_status((*self.0)
+            .CreateSessionOptions
+            .expect("CreateSessionOptions should be available")(
+            &mut ret
+        ))?;
+        Ok(ret)
+    }
+
     pub unsafe fn create_session(
         &self,
         env: *const sys::OrtEnv,
@@ -140,6 +150,12 @@ impl API {
         (*self.0)
             .ReleaseSession
             .expect("ReleaseSession should be available")(session)
+    }
+
+    pub unsafe fn release_session_options(&self, session_options: *mut sys::OrtSessionOptions) {
+        (*self.0)
+            .ReleaseSessionOptions
+            .expect("ReleaseSessionOptions should be available")(session_options)
     }
 
     pub unsafe fn create_tensor_with_data_as_ort_value(
