@@ -2,13 +2,14 @@ use std::{
     ffi::{c_void, CStr, CString},
     os::unix::ffi::OsStrExt,
     path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 mod sys {
     use std::ffi::c_void;
 
     extern "C" {
-        pub fn open_coreml_model(path: *const i8) -> *const c_void;
+        pub fn open_coreml_model(path: *const i8, counter: u32) -> *const c_void;
         pub fn mlmodel_predict(
             model: *const c_void,
             input_names: *const *const i8,
@@ -109,14 +110,19 @@ impl Drop for OutputTensor {
     }
 }
 
+static MODEL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl MLModel {
+    /// Creates a new model from the given path. Models created by this function will be
+    /// distributed evenly amongst available Metal devices.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, NewMLModelError> {
         let path = match CString::new(path.as_ref().as_os_str().as_bytes()) {
             Ok(s) => s,
             Err(_) => return Err(NewMLModelError::MalformedPath),
         };
+        let counter = MODEL_COUNT.fetch_add(1, Ordering::SeqCst);
         unsafe {
-            let ptr = sys::open_coreml_model(path.as_ptr());
+            let ptr = sys::open_coreml_model(path.as_ptr(), (counter % 0xffffffff) as _);
             if ptr.is_null() {
                 Err(NewMLModelError::OpenError)
             } else {
