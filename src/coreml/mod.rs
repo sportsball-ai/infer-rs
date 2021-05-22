@@ -8,7 +8,7 @@ mod sys {
     use std::ffi::c_void;
 
     extern "C" {
-        pub fn open_coreml_model(path: *const i8) -> *const c_void;
+        pub fn open_coreml_model(path: *const i8, counter: u32) -> *const c_void;
         pub fn mlmodel_predict(
             model: *const c_void,
             input_names: *const *const i8,
@@ -110,13 +110,15 @@ impl Drop for OutputTensor {
 }
 
 impl MLModel {
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, NewMLModelError> {
+    /// Creates a new model from the given path. The counter will be used to distribute the model
+    /// evenly amongst available Metal devices.
+    pub fn new<P: AsRef<Path>>(path: P, counter: usize) -> Result<Self, NewMLModelError> {
         let path = match CString::new(path.as_ref().as_os_str().as_bytes()) {
             Ok(s) => s,
             Err(_) => return Err(NewMLModelError::MalformedPath),
         };
         unsafe {
-            let ptr = sys::open_coreml_model(path.as_ptr());
+            let ptr = sys::open_coreml_model(path.as_ptr(), (counter % 0xffffffff) as _);
             if ptr.is_null() {
                 Err(NewMLModelError::OpenError)
             } else {

@@ -1,11 +1,12 @@
 #import <CoreML/CoreML.h>
+#import <Metal/Metal.h>
 #include <cstdint>
 
 #if !__has_feature(objc_arc)
 #error "ARC is off"
 #endif
 
-extern "C" const void* open_coreml_model(const char* path) {
+extern "C" const void* open_coreml_model(const char* path, uint32_t counter) {
     @autoreleasepool {
         NSString* pathString = [NSString stringWithUTF8String:path];
         NSURL* pathURL = [NSURL fileURLWithPath:pathString];
@@ -18,7 +19,14 @@ extern "C" const void* open_coreml_model(const char* path) {
             return NULL;
         }
 
-        MLModel* model = [MLModel modelWithContentsOfURL:compiledURL error:&error];
+        MLModelConfiguration* config = [MLModelConfiguration new];
+
+        NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
+        if (devices.count > 1) {
+            config.preferredMetalDevice = devices[counter % devices.count];
+        }
+
+        MLModel* model = [MLModel modelWithContentsOfURL:compiledURL configuration:config error:&error];
         [[NSFileManager defaultManager] removeItemAtURL:compiledURL error:NULL];
         if (error != nil) {
             NSLog(@"%@", error);

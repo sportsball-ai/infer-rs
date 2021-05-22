@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg(all(feature = "coreml", target_os = "macos"))]
 pub mod coreml;
@@ -30,6 +31,8 @@ pub enum NewSessionError {
     UnsupportedFormat,
 }
 
+static SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl Environment {
     pub fn new() -> Result<Self, NewEnvironmentError> {
         Ok(Self {
@@ -40,11 +43,16 @@ impl Environment {
 
     pub fn new_session<P: AsRef<Path>>(&self, model_path: P) -> Result<Session, NewSessionError> {
         let model_path = model_path.as_ref();
+        let session_number = SESSION_COUNT.fetch_add(1, Ordering::SeqCst);
+
         Ok(match model_path.extension().and_then(|s| s.to_str()) {
             #[cfg(feature = "onnx")]
-            Some("onnx") => Session::ONNX(self.onnx.new_session(model_path)?),
+            Some("onnx") => {
+                let _ = session_number;
+                Session::ONNX(self.onnx.new_session(model_path)?)
+            }
             #[cfg(all(feature = "coreml", target_os = "macos"))]
-            Some("mlmodel") => Session::CoreML(coreml::MLModel::new(model_path)?),
+            Some("mlmodel") => Session::CoreML(coreml::MLModel::new(model_path, session_number)?),
             _ => return Err(NewSessionError::UnsupportedFormat),
         })
     }
