@@ -113,8 +113,8 @@ impl Drop for OutputTensor {
 static MODEL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl MLModel {
-    /// Creates a new model from the given path. Models created by this function will be evenly
-    /// amongst available Metal devices.
+    /// Creates a new model from the given path. Models created by this function will be
+    /// distributed evenly amongst available Metal devices.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, NewMLModelError> {
         let path = match CString::new(path.as_ref().as_os_str().as_bytes()) {
             Ok(s) => s,
