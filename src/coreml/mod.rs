@@ -2,6 +2,7 @@ use std::{
     ffi::{c_void, CStr, CString},
     os::unix::ffi::OsStrExt,
     path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 mod sys {
@@ -109,14 +110,17 @@ impl Drop for OutputTensor {
     }
 }
 
+static MODEL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 impl MLModel {
-    /// Creates a new model from the given path. The counter will be used to distribute the model
-    /// evenly amongst available Metal devices.
-    pub fn new<P: AsRef<Path>>(path: P, counter: usize) -> Result<Self, NewMLModelError> {
+    /// Creates a new model from the given path. Models created by this function will be evenly
+    /// amongst available Metal devices.
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<Self, NewMLModelError> {
         let path = match CString::new(path.as_ref().as_os_str().as_bytes()) {
             Ok(s) => s,
             Err(_) => return Err(NewMLModelError::MalformedPath),
         };
+        let counter = MODEL_COUNT.fetch_add(1, Ordering::SeqCst);
         unsafe {
             let ptr = sys::open_coreml_model(path.as_ptr(), (counter % 0xffffffff) as _);
             if ptr.is_null() {
