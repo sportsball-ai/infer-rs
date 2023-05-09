@@ -99,7 +99,7 @@ impl API {
     pub unsafe fn session_get_output_count(
         &self,
         sess: *const sys::OrtSession,
-    ) -> Result<sys::size_t, Error> {
+    ) -> Result<usize, Error> {
         let mut ret = 0;
         self.consume_status((*self.0)
             .SessionGetOutputCount
@@ -112,7 +112,7 @@ impl API {
     pub unsafe fn session_get_output_name(
         &self,
         sess: *const sys::OrtSession,
-        index: sys::size_t,
+        index: usize,
         allocator: *mut sys::OrtAllocator,
     ) -> Result<*mut ::std::os::raw::c_char, Error> {
         let mut ret = std::ptr::null_mut();
@@ -162,7 +162,7 @@ impl API {
         &self,
         info: *const sys::OrtMemoryInfo,
         p_data: *mut ::std::os::raw::c_void,
-        p_data_len: sys::size_t,
+        p_data_len: usize,
         shape: &[i64],
         type_: sys::ONNXTensorElementDataType,
     ) -> Result<*mut sys::OrtValue, Error> {
@@ -249,7 +249,7 @@ impl API {
     pub unsafe fn get_dimensions_count(
         &self,
         info: *const sys::OrtTensorTypeAndShapeInfo,
-    ) -> Result<sys::size_t, Error> {
+    ) -> Result<usize, Error> {
         let mut ret = 0;
         self.consume_status((*self.0)
             .GetDimensionsCount
